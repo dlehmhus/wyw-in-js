@@ -138,12 +138,20 @@ function splitSelectorList(selectorText: string) {
   return parts;
 }
 
-function wrapSelector(selectorText: string) {
-  const selectors = splitSelectorList(selectorText)
+// Each member of a selector list is emitted as its own rule. lightningcss,
+// which Turbopack uses for CSS modules, resolves a wrapped list
+// `:global(a), :global(b)` into `:is(a, b)`, and that is not equivalent to the
+// list: pseudo-elements are not allowed inside `:is()` (browsers drop the whole
+// rule, so every `&::before, &::after { }` lost its declarations), and `:is()`
+// takes the specificity of its most specific argument, so `.a, #b .c` gives
+// `.a` id-level specificity and changes the cascade. Separate rules with the
+// same body are left alone by lightningcss and keep the source semantics.
+function wrapRule(selectorText: string, blockBody: string) {
+  return splitSelectorList(selectorText)
     .map((s) => s.trim())
-    .filter(Boolean);
-
-  return selectors.map((selector) => `:global(${selector})`).join(', ');
+    .filter(Boolean)
+    .map((selector) => `:global(${selector}){${blockBody}}`)
+    .join('\n');
 }
 
 function makeCssModuleGlobalInner(css: string) {
@@ -218,7 +226,7 @@ function makeCssModuleGlobalInner(css: string) {
       }
 
       const blockBody = css.slice(openIdx + 1, blockEndIdx);
-      out += `${wrapSelector(selectorText)}{${blockBody}}`;
+      out += wrapRule(selectorText, blockBody);
       idx = blockEndIdx + 1;
     }
   }
