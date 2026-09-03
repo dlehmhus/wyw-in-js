@@ -140,12 +140,21 @@ function splitSelectorList(selectorText: string) {
 
 // One rule per list member: lightningcss folds `:global(a), :global(b)` into
 // `:is(a, b)` (parcel-bundler/lightningcss#1032, #1079, proposed fix #1231).
-// No separator: the source map appended in index.ts assumes one line per rule.
+// The source map appended in index.ts assumes the unwrapped line count, so
+// no separator, and only the first copy of the body keeps its newlines. A
+// backslash-newline is a string continuation and stands for nothing.
 function wrapRule(selectorText: string, blockBody: string) {
+  const singleLineBody = blockBody.replace(/\\\n|\n/g, (match) =>
+    match === '\n' ? ' ' : ''
+  );
+
   return splitSelectorList(selectorText)
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((selector) => `:global(${selector}){${blockBody}}`)
+    .map(
+      (selector, index) =>
+        `:global(${selector}){${index === 0 ? blockBody : singleLineBody}}`
+    )
     .join('');
 }
 

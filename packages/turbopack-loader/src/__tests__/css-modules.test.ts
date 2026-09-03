@@ -49,6 +49,18 @@ describe('makeCssModuleGlobal', () => {
     );
   });
 
+  it('keeps the line count when a duplicated body spans several lines', () => {
+    const body = '/* one\n   two */c:red;content:"a\\\nb";\n';
+    const out = makeCssModuleGlobal(`.a, .b, .c{${body}}`);
+
+    expect(out).toBe(
+      `:global(.a){${body}}` +
+        ':global(.b){/* one    two */c:red;content:"ab"; }' +
+        ':global(.c){/* one    two */c:red;content:"ab"; }'
+    );
+    expect(out.split('\n').length).toBe(body.split('\n').length);
+  });
+
   it('recurses into @media blocks', () => {
     expect(makeCssModuleGlobal('@media (min-width: 1px){.a{c:red}}')).toBe(
       '@media (min-width: 1px){:global(.a){c:red}}'
