@@ -1,8 +1,10 @@
 import {
-  makeCssModuleGlobal,
   makeCssModuleGlobalWithLineDeltas,
   remapGeneratedLine,
 } from '../css-modules';
+
+const makeCssModuleGlobal = (css: string) =>
+  makeCssModuleGlobalWithLineDeltas(css).css;
 
 describe('makeCssModuleGlobal', () => {
   it('wraps selectors in :global(...)', () => {
@@ -103,6 +105,15 @@ describe('makeCssModuleGlobal', () => {
     expect(remapGeneratedLine(lineDeltas, 9)).toBe(9);
   });
 
+  it('counts newlines in a multi-line prelude of a block-less at-rule', () => {
+    const { lineDeltas } = makeCssModuleGlobalWithLineDeltas(
+      '@import\nurl("a.css");\n.a,\n.b{c:red}\n.d{c:blue}'
+    );
+
+    expect(lineDeltas).toEqual([{ delta: -1, line: 3 }]);
+    expect(remapGeneratedLine(lineDeltas, 5)).toBe(4);
+  });
+
   it('recurses into @media blocks', () => {
     expect(makeCssModuleGlobal('@media (min-width: 1px){.a{c:red}}')).toBe(
       '@media (min-width: 1px){:global(.a){c:red}}'
@@ -129,5 +140,25 @@ describe('makeCssModuleGlobal', () => {
     ).toBe(
       ':global(.a:is(.b, .c)){c:red}:global([data-x="y,z"]){c:red}:global(.d:hover > .e){c:red}'
     );
+  });
+});
+
+describe('remapGeneratedLine', () => {
+  const lineDeltas = [
+    { delta: -2, line: 7 },
+    { delta: 3, line: 2 },
+    { delta: 1, line: 2 },
+  ];
+
+  it('shifts a line by the deltas of strictly earlier lines, in any order', () => {
+    expect(remapGeneratedLine(lineDeltas, 1)).toBe(1);
+    expect(remapGeneratedLine(lineDeltas, 2)).toBe(2);
+    expect(remapGeneratedLine(lineDeltas, 3)).toBe(7);
+    expect(remapGeneratedLine(lineDeltas, 7)).toBe(11);
+    expect(remapGeneratedLine(lineDeltas, 8)).toBe(10);
+  });
+
+  it('is the identity without deltas', () => {
+    expect(remapGeneratedLine([], 5)).toBe(5);
   });
 });

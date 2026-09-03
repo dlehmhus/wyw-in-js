@@ -22,11 +22,13 @@ export async function remapSourceMapLines(
   try {
     // The consumer reports sources already joined with sourceRoot.
     const generator = new SourceMapGenerator({ file: raw.file });
+    let added = 0;
 
     consumer.eachMapping((mapping) => {
       if (mapping.source === null) {
         return;
       }
+      added += 1;
       generator.addMapping({
         generated: {
           line: remapGeneratedLine(lineDeltas, mapping.generatedLine),
@@ -40,6 +42,10 @@ export async function remapSourceMapLines(
         name: mapping.name ?? undefined,
       });
     });
+
+    if (added === 0) {
+      return sourceMapText;
+    }
 
     consumer.sources.forEach((source) => {
       const content = consumer.sourceContentFor(source, true);

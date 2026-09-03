@@ -269,10 +269,6 @@ export function makeCssModuleGlobalWithLineDeltas(cssText: string) {
   return { css, lineDeltas };
 }
 
-export function makeCssModuleGlobal(cssText: string) {
-  return makeCssModuleGlobalWithLineDeltas(cssText).css;
-}
-
 // Deltas recorded on the same line apply after column 0, where the mappings
 // produced by extractCssFromAst live, so only earlier lines shift a mapping.
 export function remapGeneratedLine(lineDeltas: LineDelta[], line: number) {

@@ -65,14 +65,22 @@ describe('remapSourceMapLines', () => {
     expect(raw.sourcesContent).toEqual(['const a = 1;']);
   });
 
-  it('returns the input unchanged without deltas, for empty maps and for index maps', async () => {
+  it('returns the input unchanged when there is nothing to remap', async () => {
     const map = buildMap();
     const sections = JSON.stringify({ version: 3, sections: [] });
+    const sourceless = JSON.stringify({
+      version: 3,
+      file: 'a.css',
+      sources: ['entry.tsx'],
+      sourcesContent: ['const a = 1;'],
+      names: [],
+      mappings: 'A',
+    });
+    const deltas = [{ delta: 1, line: 1 }];
 
     expect(await remapSourceMapLines(map, [])).toBe(map);
-    expect(await remapSourceMapLines('', [{ delta: 1, line: 1 }])).toBe('');
-    expect(await remapSourceMapLines(sections, [{ delta: 1, line: 1 }])).toBe(
-      sections
-    );
+    expect(await remapSourceMapLines('', deltas)).toBe('');
+    expect(await remapSourceMapLines(sections, deltas)).toBe(sections);
+    expect(await remapSourceMapLines(sourceless, deltas)).toBe(sourceless);
   });
 });
