@@ -1,3 +1,5 @@
+import { SourceMapConsumer } from 'source-map';
+
 import type { Rules } from '@wyw-in-js/shared';
 
 import { extractCssFromAst } from '../extract';
@@ -11,15 +13,34 @@ const rule = (className: string, cssText: string, line: number) => ({
   start: { line, column: 0 },
 });
 
-// Generated lines are separated by ';' in the mappings string, so this yields
-// the 1-based generated lines that carry a mapping.
-const mappedLines = (sourceMapText: string) =>
-  (JSON.parse(sourceMapText).mappings as string)
-    .split(';')
-    .flatMap((segment, index) => (segment ? [index + 1] : []));
+const mappedLines = async (sourceMapText: string) => {
+  const consumer = await new SourceMapConsumer(JSON.parse(sourceMapText));
+  const lines: Record<string, number> = {};
+  consumer.eachMapping((mapping) => {
+    lines[mapping.name] = mapping.generatedLine;
+  });
+  consumer.destroy();
+  return lines;
+};
+
+const ruleLines = (cssText: string, selectors: string[]) =>
+  Object.fromEntries(
+    selectors.map((selector) => [
+      selector,
+      cssText.split('\n').findIndex((line) => line.startsWith(selector)) + 1,
+    ])
+  );
+
+const expectMappingsToPointAtRules = async (
+  result: ReturnType<typeof extractCssFromAst>
+) => {
+  expect(await mappedLines(result.cssSourceMapText)).toEqual(
+    ruleLines(result.cssText, Object.keys(result.rules))
+  );
+};
 
 describe('extractCssFromAst', () => {
-  it('maps single-line rules to consecutive lines', () => {
+  it('maps single-line rules to consecutive lines', async () => {
     const rules: Rules = {
       '.a': rule('a', 'color: red;', 1),
       '.b': rule('b', 'color: blue;', 2),
@@ -28,10 +49,13 @@ describe('extractCssFromAst', () => {
     const result = extractCssFromAst(rules, '', { filename });
 
     expect(result.cssText).toBe('.a{color:red;}\n.b{color:blue;}\n');
-    expect(mappedLines(result.cssSourceMapText)).toEqual([1, 2]);
+    expect(await mappedLines(result.cssSourceMapText)).toEqual({
+      '.a': 1,
+      '.b': 2,
+    });
   });
 
-  it('accounts for multi-line comments kept in a rule', () => {
+  it('accounts for multi-line comments kept in a rule', async () => {
     const rules: Rules = {
       '.a': rule('a', '/* one\n   two */\ncolor: red;', 1),
       '.b': rule('b', 'color: blue;', 2),
@@ -46,10 +70,25 @@ describe('extractCssFromAst', () => {
     expect(result.cssText).toBe(
       '.a{/* one\n   two */color:red;}\n.b{color:blue;}\n.c{color:green;}\n'
     );
-    expect(mappedLines(result.cssSourceMapText)).toEqual([1, 3, 4]);
+    expect(await mappedLines(result.cssSourceMapText)).toEqual({
+      '.a': 1,
+      '.b': 3,
+      '.c': 4,
+    });
   });
 
-  it('accounts for multi-line rules from the none preprocessor', () => {
+  it('accounts for a string continued on the next line', async () => {
+    const rules: Rules = {
+      '.a': rule('a', 'content:"a\\\nb";color: red;', 1),
+      '.b': rule('b', 'color: blue;', 2),
+    };
+
+    await expectMappingsToPointAtRules(
+      extractCssFromAst(rules, '', { filename })
+    );
+  });
+
+  it('accounts for multi-line rules from the none preprocessor', async () => {
     const rules: Rules = {
       '.a': rule('a', '\n  color: red;\n', 1),
       '.b': rule('b', 'color: blue;', 2),
@@ -63,6 +102,9 @@ describe('extractCssFromAst', () => {
     expect(result.cssText).toBe(
       '.a {\n  color: red;\n}\n\n.b {color: blue;}\n\n'
     );
-    expect(mappedLines(result.cssSourceMapText)).toEqual([1, 5]);
+    expect(await mappedLines(result.cssSourceMapText)).toEqual({
+      '.a': 1,
+      '.b': 5,
+    });
   });
 });
