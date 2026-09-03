@@ -12,9 +12,10 @@ import type {
 } from '@wyw-in-js/transform';
 import { transform, TransformCacheCollection } from '@wyw-in-js/transform';
 
-import { makeCssModuleGlobal } from './css-modules';
+import { makeCssModuleGlobalWithLineDeltas } from './css-modules';
 import { writeFileIfChanged } from './file-utils';
 import { insertImportStatement } from './insert-import';
+import { remapSourceMapLines } from './source-map';
 
 const DEFAULT_EXTENSION = '.wyw-in-js.module.css';
 const CSS_OUTPUT_QUERY = '__wyw_css';
@@ -248,7 +249,9 @@ const turbopackLoader: Loader = function turbopackLoader(
       const rawCssText = result.cssText ?? '';
 
       if (rawCssText.trim()) {
-        let cssText = makeCssModuleGlobal(rawCssText);
+        const { css, lineDeltas } =
+          makeCssModuleGlobalWithLineDeltas(rawCssText);
+        let cssText = css;
         const dependencyResolutions = new Map(
           (result.dependencyResolutions ?? []).map(
             ({ resolved, source }: DependencyResolution) => [source, resolved]
@@ -256,8 +259,12 @@ const turbopackLoader: Loader = function turbopackLoader(
         );
 
         if (sourceMap && typeof result.cssSourceMapText !== 'undefined') {
+          const cssSourceMapText = await remapSourceMapLines(
+            result.cssSourceMapText,
+            lineDeltas
+          );
           cssText += `\n/*# sourceMappingURL=data:application/json;base64,${Buffer.from(
-            result.cssSourceMapText
+            cssSourceMapText
           ).toString('base64')}*/\n`;
         }
 

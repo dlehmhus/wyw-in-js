@@ -16,19 +16,27 @@ const rule = (className: string, cssText: string, line: number) => ({
 const mappedLines = async (sourceMapText: string) => {
   const consumer = await new SourceMapConsumer(JSON.parse(sourceMapText));
   const lines: Record<string, number> = {};
-  consumer.eachMapping((mapping) => {
-    lines[mapping.name] = mapping.generatedLine;
-  });
-  consumer.destroy();
+  try {
+    consumer.eachMapping((mapping) => {
+      lines[mapping.name] = mapping.generatedLine;
+    });
+  } finally {
+    consumer.destroy();
+  }
   return lines;
 };
 
 const ruleLines = (cssText: string, selectors: string[]) =>
   Object.fromEntries(
-    selectors.map((selector) => [
-      selector,
-      cssText.split('\n').findIndex((line) => line.startsWith(selector)) + 1,
-    ])
+    selectors.map((selector) => {
+      const index = cssText
+        .split('\n')
+        .findIndex((line) => line.startsWith(selector));
+      if (index === -1) {
+        throw new Error(`No line starts with ${selector}`);
+      }
+      return [selector, index + 1];
+    })
   );
 
 const expectMappingsToPointAtRules = async (
@@ -86,6 +94,26 @@ describe('extractCssFromAst', () => {
     await expectMappingsToPointAtRules(
       extractCssFromAst(rules, '', { filename })
     );
+  });
+
+  it('inserts atoms verbatim and accounts for their lines', async () => {
+    const rules: Rules = {
+      '.a': {
+        ...rule('a', '.a{color:red;}\n.a:hover{color:blue;}', 1),
+        atom: true,
+      },
+      '.b': rule('b', 'color: green;', 2),
+    };
+
+    const result = extractCssFromAst(rules, '', { filename });
+
+    expect(result.cssText).toBe(
+      '.a{color:red;}\n.a:hover{color:blue;}\n.b{color:green;}\n'
+    );
+    expect(await mappedLines(result.cssSourceMapText)).toEqual({
+      '.a': 1,
+      '.b': 3,
+    });
   });
 
   it('accounts for multi-line rules from the none preprocessor', async () => {

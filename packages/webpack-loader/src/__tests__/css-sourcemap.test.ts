@@ -73,19 +73,27 @@ const generatedLines = async (css: string) => {
     JSON.parse(Buffer.from(css.slice(start, end), 'base64').toString())
   );
   const lines: Record<string, number> = {};
-  consumer.eachMapping((mapping) => {
-    lines[mapping.name] = mapping.generatedLine;
-  });
-  consumer.destroy();
+  try {
+    consumer.eachMapping((mapping) => {
+      lines[mapping.name] = mapping.generatedLine;
+    });
+  } finally {
+    consumer.destroy();
+  }
   return lines;
+};
+
+const lineNumber = (css: string, prefix: string) => {
+  const index = css.split('\n').findIndex((line) => line.startsWith(prefix));
+  if (index === -1) {
+    throw new Error(`No line starts with ${prefix}`);
+  }
+  return index + 1;
 };
 
 const actualLines = (css: string) =>
   Object.fromEntries(
-    Object.keys(rules).map((selector) => [
-      selector,
-      css.split('\n').findIndex((line) => line.startsWith(selector)) + 1,
-    ])
+    Object.keys(rules).map((selector) => [selector, lineNumber(css, selector)])
   );
 
 describe('webpack-loader CSS source map', () => {

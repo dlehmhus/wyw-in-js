@@ -1,4 +1,8 @@
-import { makeCssModuleGlobal } from '../css-modules';
+import {
+  makeCssModuleGlobal,
+  makeCssModuleGlobalWithLineDeltas,
+  remapGeneratedLine,
+} from '../css-modules';
 
 describe('makeCssModuleGlobal', () => {
   it('wraps selectors in :global(...)', () => {
@@ -49,16 +53,40 @@ describe('makeCssModuleGlobal', () => {
     );
   });
 
-  it('keeps the line count when a duplicated body spans several lines', () => {
-    const body = '/* one\n   two */c:red;content:"a\\\nb";\n';
-    const out = makeCssModuleGlobal(`.a, .b, .c{${body}}`);
-
-    expect(out).toBe(
-      `:global(.a){${body}}` +
-        ':global(.b){/* one    two */c:red;content:"ab"; }' +
-        ':global(.c){/* one    two */c:red;content:"ab"; }'
+  it('duplicates a multi-line body verbatim and reports the added lines', () => {
+    const body = '/* one\n   two */c:red;content:"a\\\nb";';
+    const { css, lineDeltas } = makeCssModuleGlobalWithLineDeltas(
+      `.a, .b, .c{${body}}\n.d{c:blue}`
     );
-    expect(out.split('\n').length).toBe(body.split('\n').length);
+
+    expect(css).toBe(
+      `:global(.a){${body}}:global(.b){${body}}:global(.c){${body}}\n:global(.d){c:blue}`
+    );
+    expect(lineDeltas).toEqual([{ delta: 4, line: 1 }]);
+    expect(remapGeneratedLine(lineDeltas, 1)).toBe(1);
+    expect(remapGeneratedLine(lineDeltas, 4)).toBe(8);
+  });
+
+  it('reports newlines dropped from a selector list', () => {
+    const { css, lineDeltas } = makeCssModuleGlobalWithLineDeltas(
+      '.a,\n.b\n{c:red}\n.c{c:blue}'
+    );
+
+    expect(css).toBe(
+      ':global(.a){c:red}:global(.b){c:red}\n:global(.c){c:blue}'
+    );
+    expect(lineDeltas).toEqual([{ delta: -2, line: 1 }]);
+    expect(remapGeneratedLine(lineDeltas, 4)).toBe(2);
+  });
+
+  it('tracks lines through nested at-rules, comments and strings', () => {
+    const { lineDeltas } = makeCssModuleGlobalWithLineDeltas(
+      '/* a\nb */\n.x{content:"c\\\nd"}\n@media (min-width: 1px){\n.a, .b{e\nf}\n}\n.c{c:blue}'
+    );
+
+    expect(lineDeltas).toEqual([{ delta: 1, line: 6 }]);
+    expect(remapGeneratedLine(lineDeltas, 6)).toBe(6);
+    expect(remapGeneratedLine(lineDeltas, 9)).toBe(10);
   });
 
   it('recurses into @media blocks', () => {
