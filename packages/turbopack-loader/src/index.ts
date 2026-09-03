@@ -258,15 +258,10 @@ const turbopackLoader: Loader = function turbopackLoader(
           )
         );
 
-        if (sourceMap && typeof result.cssSourceMapText !== 'undefined') {
-          const cssSourceMapText = await remapSourceMapLines(
-            result.cssSourceMapText,
-            lineDeltas
-          );
-          cssText += `\n/*# sourceMappingURL=data:application/json;base64,${Buffer.from(
-            cssSourceMapText
-          ).toString('base64')}*/\n`;
-        }
+        const cssSourceMapText =
+          sourceMap && result.cssSourceMapText
+            ? await remapSourceMapLines(result.cssSourceMapText, lineDeltas)
+            : undefined;
 
         await Promise.all(
           (result.dependencies ?? []).map((dep) =>
@@ -274,9 +269,17 @@ const turbopackLoader: Loader = function turbopackLoader(
           )
         );
 
+        // Turbopack only picks up a CSS source map returned by the loader; it
+        // does not read `sourceMappingURL` comments out of CSS.
         if (outputCss) {
-          callback(null, cssText);
+          callback(null, cssText, cssSourceMapText);
           return;
+        }
+
+        if (cssSourceMapText !== undefined) {
+          cssText += `\n/*# sourceMappingURL=data:application/json;base64,${Buffer.from(
+            cssSourceMapText
+          ).toString('base64')}*/\n`;
         }
 
         let importPath = cssImportPath;

@@ -52,12 +52,20 @@ const rules: Rules = {
 
 const marker = 'sourceMappingURL=data:application/json;base64,';
 
-const generatedLines = async (css: string) => {
-  const start = css.indexOf(marker) + marker.length;
+const readInlineMap = (css: string) => {
+  const start = css.indexOf(marker);
+  if (start === -1) {
+    throw new Error('No inline source map');
+  }
   const end = css.indexOf('*/', start);
-  const consumer = await new SourceMapConsumer(
-    JSON.parse(Buffer.from(css.slice(start, end), 'base64').toString())
-  );
+  return Buffer.from(
+    css.slice(start + marker.length, end),
+    'base64'
+  ).toString();
+};
+
+const generatedLines = async (sourceMapText: string) => {
+  const consumer = await new SourceMapConsumer(JSON.parse(sourceMapText));
   const lines: Record<string, number> = {};
   try {
     consumer.eachMapping((mapping) => {
@@ -85,41 +93,39 @@ const actualLines = (css: string) =>
     ])
   );
 
-describe('turbopack-loader CSS source map', () => {
-  beforeEach(() => {
-    transformMock.mockReset();
-  });
+const runLoader = async (options: Record<string, unknown>) => {
+  const { default: turbopackLoader } = await import('../index');
 
-  it('points every mapping at the line where its rule starts', async () => {
-    const { default: turbopackLoader } = await import('../index');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-turbo-'));
+  const resourcePath = path.join(tmpDir, 'entry.tsx');
+  const configFile = path.join(tmpDir, 'wyw.config.js');
+  fs.writeFileSync(resourcePath, 'export const x = 1;\n');
+  fs.writeFileSync(configFile, 'module.exports = {};\n');
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-turbo-'));
-    const resourcePath = path.join(tmpDir, 'entry.tsx');
-    const configFile = path.join(tmpDir, 'wyw.config.js');
-    fs.writeFileSync(resourcePath, 'export const x = 1;\n');
-    fs.writeFileSync(configFile, 'module.exports = {};\n');
+  transformMock.mockImplementation(async (_services, code) => ({
+    code,
+    sourceMap: null,
+    dependencies: [],
+    ...extractCssFromAst(rules, '', {
+      filename: resourcePath,
+      keepComments: true,
+    }),
+  }));
 
-    transformMock.mockImplementation(async (_services, code) => ({
-      code,
-      sourceMap: null,
-      dependencies: [],
-      ...extractCssFromAst(rules, '', {
-        filename: resourcePath,
-        keepComments: true,
-      }),
-    }));
-
-    await new Promise<void>((resolve, reject) => {
+  const emitted = await new Promise<{ code?: string; map?: string }>(
+    (resolve, reject) => {
       turbopackLoader.call(
         {
           addDependency: jest.fn(),
           async: jest.fn(),
-          callback: (err: Error | null) => (err ? reject(err) : resolve()),
+          callback: (err: Error | null, code?: string, map?: string) =>
+            err ? reject(err) : resolve({ code, map }),
           emitWarning: jest.fn(),
           getOptions: () => ({
             configFile,
             sourceMap: true,
             keepComments: true,
+            ...options,
           }),
           getResolve: () => async () => false,
           resourcePath,
@@ -127,13 +133,34 @@ describe('turbopack-loader CSS source map', () => {
         fs.readFileSync(resourcePath, 'utf8'),
         null
       );
-    });
+    }
+  );
+
+  return { emitted, tmpDir };
+};
+
+describe('turbopack-loader CSS source map', () => {
+  beforeEach(() => {
+    transformMock.mockReset();
+  });
+
+  it('inlines a map that points at the wrapped rules in sidecar mode', async () => {
+    const { tmpDir } = await runLoader({});
 
     const css = fs.readFileSync(
       path.join(tmpDir, 'entry.wyw-in-js.module.css'),
       'utf8'
     );
 
-    expect(await generatedLines(css)).toEqual(actualLines(css));
+    expect(await generatedLines(readInlineMap(css))).toEqual(actualLines(css));
+  });
+
+  it('returns a map that points at the wrapped rules in query mode', async () => {
+    const { emitted } = await runLoader({ outputCss: true });
+
+    const css = String(emitted.code);
+
+    expect(css).not.toContain(marker);
+    expect(await generatedLines(String(emitted.map))).toEqual(actualLines(css));
   });
 });
