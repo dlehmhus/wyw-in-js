@@ -51,6 +51,9 @@ const generatedLines = async (css: string) => {
   const lines: Record<string, number> = {};
   try {
     consumer.eachMapping((mapping) => {
+      if (mapping.name === null) {
+        throw new Error(`Mapping at line ${mapping.generatedLine} has no name`);
+      }
       lines[mapping.name] = mapping.generatedLine;
     });
   } finally {
@@ -59,17 +62,28 @@ const generatedLines = async (css: string) => {
   return lines;
 };
 
-const lineNumber = (css: string, prefix: string) => {
-  const index = css.split('\n').findIndex((line) => line.startsWith(prefix));
+const selectorEnd = new Set([')', ':', ',', '{', ' ']);
+
+const startsWithSelector = (line: string, prefix: string, selector: string) =>
+  line.startsWith(prefix + selector) &&
+  selectorEnd.has(line.charAt(prefix.length + selector.length));
+
+const lineNumber = (css: string, prefix: string, selector: string) => {
+  const index = css
+    .split('\n')
+    .findIndex((line) => startsWithSelector(line, prefix, selector));
   if (index === -1) {
-    throw new Error(`No line starts with ${prefix}`);
+    throw new Error(`No line starts with ${prefix}${selector}`);
   }
   return index + 1;
 };
 
 const actualLines = (css: string) =>
   Object.fromEntries(
-    Object.keys(rules).map((selector) => [selector, lineNumber(css, selector)])
+    Object.keys(rules).map((selector) => [
+      selector,
+      lineNumber(css, '', selector),
+    ])
   );
 
 describe('vite CSS source map', () => {

@@ -13,13 +13,15 @@ export async function remapSourceMapLines(
   }
 
   const raw: RawSourceMap = JSON.parse(sourceMapText);
+  if (!Array.isArray(raw.sources)) {
+    return sourceMapText;
+  }
+
   const consumer = await new SourceMapConsumer(raw);
 
   try {
-    const generator = new SourceMapGenerator({
-      file: raw.file,
-      sourceRoot: raw.sourceRoot,
-    });
+    // The consumer reports sources already joined with sourceRoot.
+    const generator = new SourceMapGenerator({ file: raw.file });
 
     consumer.eachMapping((mapping) => {
       generator.addMapping({
@@ -40,7 +42,7 @@ export async function remapSourceMapLines(
       });
     });
 
-    raw.sources.forEach((source) => {
+    consumer.sources.forEach((source) => {
       const content = consumer.sourceContentFor(source, true);
       if (content !== null) {
         generator.setSourceContent(source, content);

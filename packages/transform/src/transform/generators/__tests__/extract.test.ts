@@ -18,6 +18,9 @@ const mappedLines = async (sourceMapText: string) => {
   const lines: Record<string, number> = {};
   try {
     consumer.eachMapping((mapping) => {
+      if (mapping.name === null) {
+        throw new Error(`Mapping at line ${mapping.generatedLine} has no name`);
+      }
       lines[mapping.name] = mapping.generatedLine;
     });
   } finally {

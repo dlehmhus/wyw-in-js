@@ -89,6 +89,20 @@ describe('makeCssModuleGlobal', () => {
     expect(remapGeneratedLine(lineDeltas, 9)).toBe(10);
   });
 
+  it('tracks lines across a multi-line at-rule prelude and after its block', () => {
+    const { lineDeltas } = makeCssModuleGlobalWithLineDeltas(
+      '@media\n(min-width: 1px){\n.a, .b{c\nd}\n.e{f}\n}\n.y,\n.z{g}\n.w{h}'
+    );
+
+    expect(lineDeltas).toEqual([
+      { delta: 1, line: 3 },
+      { delta: -1, line: 7 },
+    ]);
+    expect(remapGeneratedLine(lineDeltas, 3)).toBe(3);
+    expect(remapGeneratedLine(lineDeltas, 7)).toBe(8);
+    expect(remapGeneratedLine(lineDeltas, 9)).toBe(9);
+  });
+
   it('recurses into @media blocks', () => {
     expect(makeCssModuleGlobal('@media (min-width: 1px){.a{c:red}}')).toBe(
       '@media (min-width: 1px){:global(.a){c:red}}'
