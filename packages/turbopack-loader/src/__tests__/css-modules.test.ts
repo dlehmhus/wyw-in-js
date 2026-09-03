@@ -8,17 +8,25 @@ describe('makeCssModuleGlobal', () => {
   });
 
   it('emits one rule per member of a selector list', () => {
-    // lightningcss folds `:global(a), :global(b)` into `:is(a, b)`, which is
-    // invalid with pseudo-elements and takes the specificity of the most
-    // specific member; separate rules keep the source semantics
     expect(makeCssModuleGlobal('.a, .b{color:red}')).toBe(
-      ':global(.a){color:red}\n:global(.b){color:red}'
+      ':global(.a){color:red}:global(.b){color:red}'
     );
     expect(makeCssModuleGlobal('.a:before, .a:after{content:" ";c:red}')).toBe(
-      ':global(.a:before){content:" ";c:red}\n:global(.a:after){content:" ";c:red}'
+      ':global(.a:before){content:" ";c:red}:global(.a:after){content:" ";c:red}'
     );
     expect(makeCssModuleGlobal('.a, #b .c{c:red}')).toBe(
-      ':global(.a){c:red}\n:global(#b .c){c:red}'
+      ':global(.a){c:red}:global(#b .c){c:red}'
+    );
+  });
+
+  it('splits the `&:before, &:after` pair as stylis flattens it', () => {
+    expect(
+      makeCssModuleGlobal(
+        ".abc1def:before,.abc1def:after{content:' ';background:orange;animation:zoom 2.7s infinite;}"
+      )
+    ).toBe(
+      ":global(.abc1def:before){content:' ';background:orange;animation:zoom 2.7s infinite;}" +
+        ":global(.abc1def:after){content:' ';background:orange;animation:zoom 2.7s infinite;}"
     );
   });
 
@@ -28,7 +36,16 @@ describe('makeCssModuleGlobal', () => {
         '@media (min-width: 1px){.a::before, .a::after{c:red}}'
       )
     ).toBe(
-      '@media (min-width: 1px){:global(.a::before){c:red}\n:global(.a::after){c:red}}'
+      '@media (min-width: 1px){:global(.a::before){c:red}:global(.a::after){c:red}}'
+    );
+  });
+
+  it('duplicates at-rules nested in the body for every list member', () => {
+    expect(
+      makeCssModuleGlobal('.a, .b{c:red;@media (min-width: 1px){c:blue}}')
+    ).toBe(
+      ':global(.a){c:red;@media (min-width: 1px){c:blue}}' +
+        ':global(.b){c:red;@media (min-width: 1px){c:blue}}'
     );
   });
 
@@ -56,7 +73,7 @@ describe('makeCssModuleGlobal', () => {
     expect(
       makeCssModuleGlobal('.a:is(.b, .c), [data-x="y,z"], .d:hover > .e{c:red}')
     ).toBe(
-      ':global(.a:is(.b, .c)){c:red}\n:global([data-x="y,z"]){c:red}\n:global(.d:hover > .e){c:red}'
+      ':global(.a:is(.b, .c)){c:red}:global([data-x="y,z"]){c:red}:global(.d:hover > .e){c:red}'
     );
   });
 });

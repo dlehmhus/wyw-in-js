@@ -138,20 +138,15 @@ function splitSelectorList(selectorText: string) {
   return parts;
 }
 
-// Each member of a selector list is emitted as its own rule. lightningcss,
-// which Turbopack uses for CSS modules, resolves a wrapped list
-// `:global(a), :global(b)` into `:is(a, b)`, and that is not equivalent to the
-// list: pseudo-elements are not allowed inside `:is()` (browsers drop the whole
-// rule, so every `&::before, &::after { }` lost its declarations), and `:is()`
-// takes the specificity of its most specific argument, so `.a, #b .c` gives
-// `.a` id-level specificity and changes the cascade. Separate rules with the
-// same body are left alone by lightningcss and keep the source semantics.
+// One rule per list member: lightningcss folds `:global(a), :global(b)` into
+// `:is(a, b)` (parcel-bundler/lightningcss#1032, #1079, proposed fix #1231).
+// No separator: the source map appended in index.ts assumes one line per rule.
 function wrapRule(selectorText: string, blockBody: string) {
   return splitSelectorList(selectorText)
     .map((s) => s.trim())
     .filter(Boolean)
     .map((selector) => `:global(${selector}){${blockBody}}`)
-    .join('\n');
+    .join('');
 }
 
 function makeCssModuleGlobalInner(css: string) {
