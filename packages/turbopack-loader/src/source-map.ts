@@ -24,21 +24,20 @@ export async function remapSourceMapLines(
     const generator = new SourceMapGenerator({ file: raw.file });
 
     consumer.eachMapping((mapping) => {
+      if (mapping.source === null) {
+        return;
+      }
       generator.addMapping({
         generated: {
           line: remapGeneratedLine(lineDeltas, mapping.generatedLine),
           column: mapping.generatedColumn,
         },
-        ...(mapping.source === null
-          ? {}
-          : {
-              source: mapping.source,
-              original: {
-                line: mapping.originalLine,
-                column: mapping.originalColumn,
-              },
-              name: mapping.name ?? undefined,
-            }),
+        original: {
+          line: mapping.originalLine,
+          column: mapping.originalColumn,
+        },
+        source: mapping.source,
+        name: mapping.name ?? undefined,
       });
     });
 
