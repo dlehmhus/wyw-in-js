@@ -227,6 +227,8 @@ export class Entrypoint extends BaseEntrypoint {
 
   #isProcessing = false;
 
+  #processingStarted = false;
+
   #invalidationError: Error | null = null;
 
   readonly #cacheLifecycleVersion: number;
@@ -336,6 +338,15 @@ export class Entrypoint extends BaseEntrypoint {
 
   public get isProcessing(): boolean {
     return this.#isProcessing;
+  }
+
+  /**
+   * Whether processEntrypoint has ever started on this generation. Stays true
+   * after processing ends. False for an analysis root that only resolved
+   * imports (static preeval, barrel rewriting) and was never processed.
+   */
+  public get processingStarted(): boolean {
+    return this.#processingStarted;
   }
 
   private get invalidationError(): Error | null {
@@ -756,6 +767,7 @@ export class Entrypoint extends BaseEntrypoint {
 
   public beginProcessing() {
     this.#isProcessing = true;
+    this.#processingStarted = true;
     if (!this.#processingPromise) {
       this.#processingPromise = new Promise<void>((resolve) => {
         this.#resolveProcessing = resolve;

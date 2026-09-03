@@ -36,8 +36,10 @@ function isMissingFileError(error: unknown): boolean {
 interface IBaseCachedEntrypoint {
   dependencies: Map<string, { resolved: string | null }>;
   hasTransformResult?: boolean;
+  ignored?: boolean;
   initialCode?: string;
   isProcessing?: boolean;
+  processingStarted?: boolean;
   invalidateOnDependencyChange?: Set<string>;
   invalidationDependencies?: Map<string, { resolved: string | null }>;
   transformed?: boolean;
@@ -48,9 +50,20 @@ type EntrypointDependencySnapshot = Pick<
   'dependencies' | 'invalidationDependencies' | 'invalidateOnDependencyChange'
 >;
 
+interface IDependencyToCheck {
+  resolved: string | null;
+  // The parent only read this file (invalidation dependency or barrel
+  // manifest entry) instead of importing it as a module.
+  readOnly?: boolean;
+}
+
 const isEntrypointGraphIncomplete = (
   entrypoint: IBaseCachedEntrypoint | undefined
 ) =>
+  // An ignored entrypoint (asset, file matched by an `ignore` rule) is never
+  // processed, so it never gets a transform result. Its graph is complete and
+  // empty; its own content hash is all there is to verify.
+  !entrypoint?.ignored &&
   Boolean(
     entrypoint?.isProcessing ||
       entrypoint?.transformed === false ||
@@ -103,6 +116,11 @@ export class TransformCacheCollection<
 
   private fileMtimes = new Map<string, number>();
 
+  // Disk mtime observed when a bundler handed us the `loaded` code of a file.
+  // Lets a later fs read tell "the loader chain transforms this file" (same
+  // mtime, different bytes) apart from "the file changed on disk".
+  private loadedMtimes = new Map<string, number>();
+
   private readonly exportDependencies = new Map<string, Set<string>>();
 
   private readonly entrypointDependencySnapshots = new Map<
@@ -131,10 +149,21 @@ export class TransformCacheCollection<
     }
   >();
 
+  // Files this cache has published as entrypoints in the current lifecycle,
+  // evicted ones included. Only such a module can have lost a transitive graph
+  // to an eviction. A file outside this set that a parent lists as an
+  // invalidation or barrel-manifest dependency was merely read (static preeval,
+  // side-effect provenance, barrel analysis); its content hash is the whole
+  // contract.
+  private readonly publishedEntrypoints = new Set<string>();
+
   constructor(caches: Partial<ICaches<TEntrypoint>> = {}) {
     this.barrelManifests = caches.barrelManifests || new Map();
     this.entrypoints = caches.entrypoints || new Map();
     this.exports = caches.exports || new Map();
+    for (const key of this.entrypoints.keys()) {
+      this.publishedEntrypoints.add(key);
+    }
   }
 
   public setKeySalt(keySalt: string | null) {
@@ -184,6 +213,7 @@ export class TransformCacheCollection<
     this.exports.clear();
     this.entrypointDependencySnapshots.clear();
     this.pendingUnknownGraphs.clear();
+    this.publishedEntrypoints.clear();
     this.clearCacheDependencies('all');
   }
 
@@ -301,6 +331,7 @@ export class TransformCacheCollection<
     });
     this.contentHashes.clear();
     this.fileMtimes.clear();
+    this.loadedMtimes.clear();
     this.invalidatedFiles.clear();
     this.consumedInvalidationVersions.clear();
   }
@@ -326,6 +357,7 @@ export class TransformCacheCollection<
     if (value === undefined) {
       cache.delete(cacheKey);
       this.contentHashes.delete(key);
+      this.loadedMtimes.delete(key);
       if (cacheName === 'entrypoints') {
         this.entrypointDependencySnapshots.delete(cacheKey);
       }
@@ -345,6 +377,9 @@ export class TransformCacheCollection<
 
     this.clearCacheDependencies(cacheName, key);
     cache.set(cacheKey, value);
+    if (cacheName === 'entrypoints') {
+      this.publishedEntrypoints.add(key);
+    }
 
     if (
       cacheName === 'entrypoints' &&
@@ -415,6 +450,7 @@ export class TransformCacheCollection<
       this.resetVersion += 1;
       this.entrypointDependencySnapshots.clear();
       this.pendingUnknownGraphs.clear();
+      this.publishedEntrypoints.clear();
     }
     this.clearCacheDependencies(cacheName);
   }
@@ -610,7 +646,8 @@ export class TransformCacheCollection<
             forceContentCheck ||
               invalidateOnDependencyChange?.has(dependencyFilename) ||
               false,
-            graphTraversalToken
+            graphTraversalToken,
+            dependency.readOnly === true
           );
 
           if (
@@ -641,7 +678,16 @@ export class TransformCacheCollection<
     if (previousHash === undefined) {
       const otherSource = source === 'fs' ? 'loaded' : 'fs';
       const otherHash = existing?.[otherSource];
-      const contentChanged = otherHash !== undefined && otherHash !== newHash;
+      // Loaded code routinely differs from the bytes on disk: any transpiling
+      // loader before wyw produces that. When the first fs read of a file finds
+      // the disk untouched since the bundler handed over its code, the mismatch
+      // is representation only; seed the fs hash instead of evicting an
+      // entrypoint the bundler still considers current. A moved mtime, or
+      // loaded code arriving for a disk-built entrypoint, stays a real change.
+      const contentChanged =
+        otherHash !== undefined &&
+        otherHash !== newHash &&
+        !(source === 'fs' && this.isUnchangedOnDiskSinceLoad(filename));
 
       if (contentChanged || anyDepChanged) {
         cacheLogger('content has changed, invalidate all for %s', filename);
@@ -678,8 +724,9 @@ export class TransformCacheCollection<
   private getDependenciesToCheck(
     filename: string,
     fileEntrypoint?: TEntrypoint
-  ): Map<string, { resolved: string | null }> {
-    const dependenciesToCheck = new Map<string, { resolved: string | null }>();
+  ): Map<string, IDependencyToCheck> {
+    const dependenciesToCheck = new Map<string, IDependencyToCheck>();
+    const graphDependencies = new Set<string>();
     const snapshot = this.entrypointDependencySnapshots.get(
       this.getKey(filename)
     );
@@ -693,7 +740,10 @@ export class TransformCacheCollection<
       for (const [key, dependency] of dependencySource?.dependencies ?? []) {
         const graphKey =
           dependencySources.length === 1 ? key : `${sourceIndex}:${key}`;
-        dependenciesToCheck.set(graphKey, dependency);
+        dependenciesToCheck.set(graphKey, { resolved: dependency.resolved });
+        if (dependency.resolved) {
+          graphDependencies.add(dependency.resolved);
+        }
       }
 
       for (const [
@@ -703,7 +753,10 @@ export class TransformCacheCollection<
         const graphKey =
           dependencySources.length === 1 ? key : `${sourceIndex}:${key}`;
         if (!dependenciesToCheck.has(graphKey)) {
-          dependenciesToCheck.set(graphKey, dependency);
+          dependenciesToCheck.set(graphKey, {
+            resolved: dependency.resolved,
+            readOnly: true,
+          });
         }
       }
     }
@@ -716,7 +769,16 @@ export class TransformCacheCollection<
       ) {
         dependenciesToCheck.set(dependencyFilename, {
           resolved: dependencyFilename,
+          readOnly: true,
         });
+      }
+    }
+
+    // The same file can be a module-graph edge under one specifier and an
+    // invalidation dependency under another; the graph edge wins.
+    for (const dependency of dependenciesToCheck.values()) {
+      if (dependency.resolved && graphDependencies.has(dependency.resolved)) {
+        dependency.readOnly = false;
       }
     }
 
@@ -754,14 +816,15 @@ export class TransformCacheCollection<
     dependencyChangeMemo: Map<string, boolean>,
     unknownDependencyGraphs: Set<string>,
     forceContentCheck = false,
-    graphTraversalToken?: object
+    graphTraversalToken?: object,
+    readOnly = false
   ): boolean {
     if (changedFiles.has(dependencyFilename)) {
       return true;
     }
 
-    const dependencyMemoKey = `${
-      forceContentCheck ? 'forced' : 'normal'
+    const dependencyMemoKey = `${forceContentCheck ? 'forced' : 'normal'}\0${
+      readOnly ? 'read' : 'graph'
     }\0${dependencyFilename}`;
     const memoized = dependencyChangeMemo.get(dependencyMemoKey);
     if (memoized !== undefined) {
@@ -779,9 +842,25 @@ export class TransformCacheCollection<
       this.getKey(dependencyFilename)
     );
     const graphMayBeIncomplete = isEntrypointGraphIncomplete(cachedEntrypoint);
-    const hasKnownDependencyGraph = cachedEntrypoint
-      ? !graphMayBeIncomplete || hasRetainedSnapshot
-      : hasRetainedSnapshot;
+    // A file the parent only read has no transitive graph to lose when this
+    // cache never processed it as a module. Static preeval, side-effect
+    // provenance and barrel analysis register the files they read through
+    // checkFreshness (no entrypoint, no snapshot) or through an analysis root
+    // (Entrypoint.createRoot in resolveDependency and rewriteOxcBarrelImports)
+    // that only resolves imports and never starts processing. Its content hash
+    // is the whole contract, and its partially filled dependency map is not a
+    // graph to traverse. Module-graph edges, modules that started processing
+    // and evicted once-published modules stay fail-closed.
+    const isReadOnlyLeaf =
+      readOnly &&
+      (cachedEntrypoint
+        ? cachedEntrypoint.processingStarted === false && !hasRetainedSnapshot
+        : !this.publishedEntrypoints.has(dependencyFilename));
+    const hasKnownDependencyGraph =
+      isReadOnlyLeaf ||
+      (cachedEntrypoint
+        ? !graphMayBeIncomplete || hasRetainedSnapshot
+        : hasRetainedSnapshot);
     const allowUnknownDependencyGraph = this.canTraverseUnknownGraph(
       dependencyFilename,
       graphTraversalToken
@@ -812,10 +891,13 @@ export class TransformCacheCollection<
       }
 
       if (currentMtime === cachedMtime) {
-        const nestedDependencies = this.getDependenciesToCheck(
-          dependencyFilename,
-          cachedEntrypoint
-        );
+        // An analysis root's dependency map only holds the imports it resolved
+        // for the reader; barrel and export dependencies of a never-loaded
+        // file are still useful edges.
+        const nestedDependencies =
+          isReadOnlyLeaf && cachedEntrypoint
+            ? new Map<string, IDependencyToCheck>()
+            : this.getDependenciesToCheck(dependencyFilename, cachedEntrypoint);
 
         if (
           forceContentCheck &&
@@ -876,7 +958,8 @@ export class TransformCacheCollection<
                     nestedDependency.resolved
                   ) ||
                   false,
-                graphTraversalToken
+                graphTraversalToken,
+                nestedDependency.readOnly === true
               )
             ) {
               this.invalidateForFile(dependencyFilename);
@@ -926,10 +1009,16 @@ export class TransformCacheCollection<
       return true;
     }
 
+    // Marking an analysis root as visited skips its dependency traversal and
+    // leaves the content comparison, for the same reason as above.
+    const visitedFilesForContentCheck =
+      isReadOnlyLeaf && cachedEntrypoint
+        ? new Set([...visitedFiles, dependencyFilename])
+        : visitedFiles;
     const invalidated = this.invalidateIfChangedInternal(
       dependencyFilename,
       dependencyContent,
-      visitedFiles,
+      visitedFilesForContentCheck,
       'fs',
       changedFiles,
       dependencyChangeMemo,
@@ -1105,11 +1194,7 @@ export class TransformCacheCollection<
     filename: string,
     entrypoint: TEntrypoint
   ): void {
-    if (
-      entrypoint.isProcessing ||
-      entrypoint.transformed === false ||
-      entrypoint.hasTransformResult === false
-    ) {
+    if (isEntrypointGraphIncomplete(entrypoint)) {
       // An unfinished entrypoint's dependency maps may be incomplete: take no
       // snapshot, but keep one from an earlier completed generation. The
       // previous complete graph still allows conservative dependency checks;
@@ -1140,6 +1225,19 @@ export class TransformCacheCollection<
     this.entrypointDependencySnapshots.delete(this.getKey(filename));
   }
 
+  private isUnchangedOnDiskSinceLoad(filename: string): boolean {
+    const loadedMtime = this.loadedMtimes.get(filename);
+    if (loadedMtime === undefined) {
+      return false;
+    }
+
+    try {
+      return fs.statSync(stripQueryAndHash(filename)).mtimeMs === loadedMtime;
+    } catch {
+      return false;
+    }
+  }
+
   private setContentHash(
     filename: string,
     source: 'fs' | 'loaded',
@@ -1152,15 +1250,15 @@ export class TransformCacheCollection<
       this.contentHashes.set(filename, { [source]: hash });
     }
 
-    if (source === 'fs') {
-      try {
-        this.fileMtimes.set(
-          filename,
-          fs.statSync(stripQueryAndHash(filename)).mtimeMs
-        );
-      } catch {
-        // ignore
+    try {
+      const { mtimeMs } = fs.statSync(stripQueryAndHash(filename));
+      if (source === 'fs') {
+        this.fileMtimes.set(filename, mtimeMs);
+      } else {
+        this.loadedMtimes.set(filename, mtimeMs);
       }
+    } catch {
+      // ignore
     }
   }
 }
