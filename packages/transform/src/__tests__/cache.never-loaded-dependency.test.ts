@@ -169,6 +169,49 @@ describe('TransformCacheCollection: dependency that was never an entrypoint', ()
     expect(cache.get('entrypoints', parentName)).toBeUndefined();
   });
 
+  it('treats a module that is still being processed as a hash-verified leaf', () => {
+    // Another transform is processing reset.js as a module right now. Its
+    // dependency map is partial, but theme.js only read its bytes: the content
+    // hash is the whole contract, exactly as for a never-loaded file.
+    cache.add('entrypoints', resetName, {
+      name: resetName,
+      initialCode: resetContent,
+      dependencies: new Map([['./base.js', { resolved: 'base.js' }]]),
+      invalidationDependencies: new Map(),
+      generation: 1,
+      isProcessing: true,
+      processingStarted: true,
+      transformed: false,
+    });
+
+    expect(checkParent()).toEqual({
+      changed: false,
+      unknownDependencyGraphs: new Set(),
+    });
+    expect(mockedStatSync).not.toHaveBeenCalledWith('base.js');
+  });
+
+  it('still detects a content change of a module that is still being processed', () => {
+    cache.add('entrypoints', resetName, {
+      name: resetName,
+      initialCode: resetContent,
+      dependencies: new Map(),
+      invalidationDependencies: new Map(),
+      generation: 1,
+      isProcessing: true,
+      processingStarted: true,
+      transformed: false,
+    });
+    resetContentOnDisk = 'export const reset = "* { margin: 1px }";';
+    resetMtime += 1;
+
+    expect(checkParent()).toEqual({
+      changed: true,
+      unknownDependencyGraphs: new Set(),
+    });
+    expect(cache.get('entrypoints', parentName)).toBeUndefined();
+  });
+
   it('keeps a live unfinished module that started processing unknown', () => {
     cache.add('entrypoints', resetName, {
       name: resetName,

@@ -616,6 +616,10 @@ export class TransformCacheCollection<
     const visitedFiles = new Set(previousVisitedFiles);
     const fileEntrypoint = this.get('entrypoints', filename);
     let anyDepChanged = false;
+    // A dependency whose graph is unknown is reported as changed to the caller
+    // (invalidateIfChangedWithDetails also lists it), but it is not evidence
+    // that this file is stale: only a verified change evicts.
+    let anyDepGraphUnknown = false;
 
     if (
       !visitedFiles.has(filename) &&
@@ -650,7 +654,9 @@ export class TransformCacheCollection<
             dependency.readOnly === true
           );
 
-          if (
+          if (dependencyChanged && !changedFiles.has(dependencyFilename)) {
+            anyDepGraphUnknown = true;
+          } else if (
             dependencyChanged &&
             invalidateOnDependencyChange?.has(dependencyFilename)
           ) {
@@ -662,9 +668,7 @@ export class TransformCacheCollection<
             changedFiles.add(filename);
 
             return true;
-          }
-
-          if (dependencyChanged) {
+          } else if (dependencyChanged) {
             anyDepChanged = true;
           }
         }
@@ -702,7 +706,7 @@ export class TransformCacheCollection<
       }
 
       this.setContentHash(filename, source, newHash);
-      return false;
+      return anyDepGraphUnknown;
     }
 
     const contentChanged = previousHash !== newHash;
@@ -718,7 +722,7 @@ export class TransformCacheCollection<
       return true;
     }
 
-    return false;
+    return anyDepGraphUnknown;
   }
 
   private getDependenciesToCheck(
@@ -849,12 +853,17 @@ export class TransformCacheCollection<
     // (Entrypoint.createRoot in resolveDependency and rewriteOxcBarrelImports)
     // that only resolves imports and never starts processing. Its content hash
     // is the whole contract, and its partially filled dependency map is not a
-    // graph to traverse. Module-graph edges, modules that started processing
-    // and evicted once-published modules stay fail-closed.
+    // graph to traverse. The same holds while a concurrent transform is still
+    // processing the file as a module: the reader consumed the bytes, not the
+    // module's imports, and the in-flight entrypoint verified those bytes
+    // against the cache when it was created. Module-graph edges, modules that
+    // stopped processing without a result and evicted once-published modules
+    // stay fail-closed.
     const isReadOnlyLeaf =
       readOnly &&
       (cachedEntrypoint
-        ? cachedEntrypoint.processingStarted === false && !hasRetainedSnapshot
+        ? cachedEntrypoint.isProcessing === true ||
+          (cachedEntrypoint.processingStarted === false && !hasRetainedSnapshot)
         : !this.publishedEntrypoints.has(dependencyFilename));
     const hasKnownDependencyGraph =
       isReadOnlyLeaf ||
@@ -940,6 +949,7 @@ export class TransformCacheCollection<
           }
         }
 
+        let nestedGraphIsUnknown = false;
         if (nestedDependencies.size > 0) {
           const nextVisitedFiles = new Set(visitedFiles);
           nextVisitedFiles.add(dependencyFilename);
@@ -962,10 +972,20 @@ export class TransformCacheCollection<
                 nestedDependency.readOnly === true
               )
             ) {
-              this.invalidateForFile(dependencyFilename);
-              changedFiles.add(dependencyFilename);
-              dependencyChangeMemo.set(dependencyMemoKey, true);
-              return true;
+              if (changedFiles.has(nestedDependency.resolved)) {
+                this.invalidateForFile(dependencyFilename);
+                changedFiles.add(dependencyFilename);
+                dependencyChangeMemo.set(dependencyMemoKey, true);
+                return true;
+              }
+
+              // The nested graph could not be verified, but nothing in it is
+              // known to have changed. Report that upwards without evicting
+              // this module: a module that is still processing would never
+              // get a snapshot, and its transform result would land on an
+              // object the cache no longer holds, leaving a once-published
+              // file without a graph for the rest of the lifecycle.
+              nestedGraphIsUnknown = true;
             }
           }
         }
@@ -988,8 +1008,8 @@ export class TransformCacheCollection<
           return !allowUnknownDependencyGraph;
         }
 
-        dependencyChangeMemo.set(dependencyMemoKey, false);
-        return false;
+        dependencyChangeMemo.set(dependencyMemoKey, nestedGraphIsUnknown);
+        return nestedGraphIsUnknown;
       }
     }
 
